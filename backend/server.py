@@ -100,6 +100,10 @@ def extract_video_info(url: str) -> Dict[str, Any]:
 
 # Helper function to download video
 def download_video(url: str, format_id: str, output_path: str) -> str:
+    # Validate YouTube URL first
+    if not is_valid_youtube_url(url):
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format")
+    
     ydl_opts = {
         'format': format_id,
         'outtmpl': output_path,
@@ -111,8 +115,18 @@ def download_video(url: str, format_id: str, output_path: str) -> str:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
             return output_path
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        if "Video unavailable" in error_msg or "not available" in error_msg:
+            raise HTTPException(status_code=404, detail="Video not found or unavailable")
+        elif "Private video" in error_msg:
+            raise HTTPException(status_code=403, detail="Video is private")
+        elif "format not available" in error_msg:
+            raise HTTPException(status_code=400, detail="Selected format not available")
+        else:
+            raise HTTPException(status_code=400, detail=f"Error downloading video: {error_msg}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @api_router.get("/")
 async def root():
