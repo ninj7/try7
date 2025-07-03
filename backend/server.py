@@ -58,6 +58,15 @@ class DownloadRequest(BaseModel):
     url: str
     format_id: str
 
+# Helper function to validate YouTube URL
+def is_valid_youtube_url(url: str) -> bool:
+    """Validate if the URL is a valid YouTube URL"""
+    youtube_regex = re.compile(
+        r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
+        r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})'
+    )
+    return bool(youtube_regex.match(url))
+
 # Helper function to extract video info
 def extract_video_info(url: str) -> Dict[str, Any]:
     ydl_opts = {
