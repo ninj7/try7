@@ -140,13 +140,23 @@ async def get_video_info(request: VideoInfoRequest):
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(executor, extract_video_info, request.url)
         
-        # Extract formats
+        # Extract formats with better filtering
         formats = []
         if 'formats' in info:
+            seen_qualities = set()
             for fmt in info['formats']:
-                if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':  # Video with audio
-                    quality = fmt.get('height', 'Unknown')
-                    quality_str = f"{quality}p" if quality != 'Unknown' else fmt.get('format_note', 'Unknown')
+                # Skip audio-only or video-only formats
+                if fmt.get('vcodec') == 'none' or fmt.get('acodec') == 'none':
+                    continue
+                
+                # Get quality information
+                height = fmt.get('height')
+                if height:
+                    quality_str = f"{height}p"
+                    # Skip duplicate qualities
+                    if quality_str in seen_qualities:
+                        continue
+                    seen_qualities.add(quality_str)
                     
                     formats.append(VideoFormat(
                         format_id=fmt['format_id'],
@@ -155,6 +165,16 @@ async def get_video_info(request: VideoInfoRequest):
                         filesize=fmt.get('filesize'),
                         format_note=fmt.get('format_note')
                     ))
+        
+        # If no formats found, add a default format
+        if not formats:
+            formats.append(VideoFormat(
+                format_id="best",
+                ext="mp4",
+                quality="best",
+                filesize=None,
+                format_note="Best available quality"
+            ))
         
         # Sort formats by quality (highest first)
         formats.sort(key=lambda x: int(x.quality.replace('p', '')) if x.quality.replace('p', '').isdigit() else 0, reverse=True)
