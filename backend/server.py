@@ -15,6 +15,7 @@ import tempfile
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
