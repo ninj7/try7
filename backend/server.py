@@ -65,7 +65,15 @@ def is_valid_youtube_url(url: str) -> bool:
         r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
         r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})'
     )
-    return bool(youtube_regex.match(url))
+    match = youtube_regex.match(url)
+    if not match:
+        return False
+    
+    # Additional validation for YouTube watch URLs
+    if 'youtube.com/watch' in url and 'v=' not in url:
+        return False
+    
+    return True
 
 # Helper function to extract video info
 def extract_video_info(url: str) -> Dict[str, Any]:
@@ -84,6 +92,11 @@ def extract_video_info(url: str) -> Dict[str, Any]:
             info = ydl.extract_info(url, download=False)
             if not info:
                 raise HTTPException(status_code=404, detail="Video not found or unavailable")
+            
+            # Check if this is a real video (not a generic response)
+            if info.get('title') == 'InvalidURL' or info.get('uploader') == 'InvalidURL':
+                raise HTTPException(status_code=404, detail="Video not found or unavailable")
+            
             return info
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
