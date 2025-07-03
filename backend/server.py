@@ -69,6 +69,10 @@ def is_valid_youtube_url(url: str) -> bool:
 
 # Helper function to extract video info
 def extract_video_info(url: str) -> Dict[str, Any]:
+    # Validate YouTube URL first
+    if not is_valid_youtube_url(url):
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format")
+    
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -78,9 +82,21 @@ def extract_video_info(url: str) -> Dict[str, Any]:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            if not info:
+                raise HTTPException(status_code=404, detail="Video not found or unavailable")
             return info
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        if "Video unavailable" in error_msg or "not available" in error_msg:
+            raise HTTPException(status_code=404, detail="Video not found or unavailable")
+        elif "Private video" in error_msg:
+            raise HTTPException(status_code=403, detail="Video is private")
+        elif "This video is not available" in error_msg:
+            raise HTTPException(status_code=404, detail="Video not available")
+        else:
+            raise HTTPException(status_code=400, detail=f"Error extracting video info: {error_msg}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error extracting video info: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 # Helper function to download video
 def download_video(url: str, format_id: str, output_path: str) -> str:
