@@ -156,30 +156,52 @@ async def get_video_info(request: VideoInfoRequest):
         # Extract formats with better filtering
         formats = []
         if 'formats' in info:
-            seen_qualities = set()
+            # First, collect all formats that have both video and audio
+            video_formats = []
             for fmt in info['formats']:
-                # Skip audio-only or video-only formats
-                if fmt.get('vcodec') == 'none' or fmt.get('acodec') == 'none':
-                    continue
-                
-                # Get quality information
+                # Include formats that have both video and audio
+                if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
+                    video_formats.append(fmt)
+            
+            # If no combined formats, try to get best video + audio formats
+            if not video_formats:
+                video_formats = [fmt for fmt in info['formats'] if fmt.get('vcodec') != 'none']
+            
+            # Sort by quality (height) and remove duplicates
+            seen_qualities = set()
+            video_formats.sort(key=lambda x: x.get('height', 0), reverse=True)
+            
+            for fmt in video_formats:
                 height = fmt.get('height')
-                if height:
+                if height and height > 0:
                     quality_str = f"{height}p"
-                    # Skip duplicate qualities
-                    if quality_str in seen_qualities:
-                        continue
-                    seen_qualities.add(quality_str)
-                    
-                    formats.append(VideoFormat(
-                        format_id=fmt['format_id'],
-                        ext=fmt.get('ext', 'mp4'),
-                        quality=quality_str,
-                        filesize=fmt.get('filesize'),
-                        format_note=fmt.get('format_note')
-                    ))
+                    if quality_str not in seen_qualities:
+                        seen_qualities.add(quality_str)
+                        formats.append(VideoFormat(
+                            format_id=fmt['format_id'],
+                            ext=fmt.get('ext', 'mp4'),
+                            quality=quality_str,
+                            filesize=fmt.get('filesize'),
+                            format_note=fmt.get('format_note')
+                        ))
+            
+            # Also add common format selectors
+            common_formats = [
+                ('best', 'Best available quality'),
+                ('worst', 'Lowest quality'),
+                ('bestvideo+bestaudio', 'Best video + audio'),
+            ]
+            
+            for format_id, note in common_formats:
+                formats.append(VideoFormat(
+                    format_id=format_id,
+                    ext="mp4",
+                    quality=note,
+                    filesize=None,
+                    format_note=note
+                ))
         
-        # If no formats found, add a default format
+        # If still no formats found, add a default format
         if not formats:
             formats.append(VideoFormat(
                 format_id="best",
