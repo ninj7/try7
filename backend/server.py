@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,10 +7,14 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime
-
+import yt_dlp
+import tempfile
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import json
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -25,32 +30,158 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# Thread pool for yt-dlp operations
+executor = ThreadPoolExecutor(max_workers=3)
 
 # Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+class VideoInfoRequest(BaseModel):
+    url: str
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+class VideoFormat(BaseModel):
+    format_id: str
+    ext: str
+    quality: str
+    filesize: Optional[int] = None
+    format_note: Optional[str] = None
 
-# Add your routes to the router instead of directly to app
+class VideoInfo(BaseModel):
+    title: str
+    duration: Optional[int] = None
+    thumbnail: Optional[str] = None
+    uploader: Optional[str] = None
+    view_count: Optional[int] = None
+    formats: List[VideoFormat] = []
+    url: str
+
+class DownloadRequest(BaseModel):
+    url: str
+    format_id: str
+
+# Helper function to extract video info
+def extract_video_info(url: str) -> Dict[str, Any]:
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error extracting video info: {str(e)}")
+
+# Helper function to download video
+def download_video(url: str, format_id: str, output_path: str) -> str:
+    ydl_opts = {
+        'format': format_id,
+        'outtmpl': output_path,
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+            return output_path
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
+
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "YouTube Downloader API"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
+@api_router.post("/video-info", response_model=VideoInfo)
+async def get_video_info(request: VideoInfoRequest):
+    """Get video information including available formats"""
+    try:
+        # Run yt-dlp in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(executor, extract_video_info, request.url)
+        
+        # Extract formats
+        formats = []
+        if 'formats' in info:
+            for fmt in info['formats']:
+                if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':  # Video with audio
+                    quality = fmt.get('height', 'Unknown')
+                    quality_str = f"{quality}p" if quality != 'Unknown' else fmt.get('format_note', 'Unknown')
+                    
+                    formats.append(VideoFormat(
+                        format_id=fmt['format_id'],
+                        ext=fmt.get('ext', 'mp4'),
+                        quality=quality_str,
+                        filesize=fmt.get('filesize'),
+                        format_note=fmt.get('format_note')
+                    ))
+        
+        # Sort formats by quality (highest first)
+        formats.sort(key=lambda x: int(x.quality.replace('p', '')) if x.quality.replace('p', '').isdigit() else 0, reverse=True)
+        
+        return VideoInfo(
+            title=info.get('title', 'Unknown'),
+            duration=info.get('duration'),
+            thumbnail=info.get('thumbnail'),
+            uploader=info.get('uploader'),
+            view_count=info.get('view_count'),
+            formats=formats,
+            url=request.url
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
+@api_router.post("/download")
+async def download_video_endpoint(request: DownloadRequest):
+    """Download video with specified format"""
+    try:
+        # Create temporary file
+        temp_dir = tempfile.mkdtemp()
+        output_path = os.path.join(temp_dir, f"%(title)s.%(ext)s")
+        
+        # Run download in thread pool
+        loop = asyncio.get_event_loop()
+        downloaded_file = await loop.run_in_executor(
+            executor, 
+            download_video, 
+            request.url, 
+            request.format_id, 
+            output_path
+        )
+        
+        # Get the actual filename
+        files = os.listdir(temp_dir)
+        if not files:
+            raise HTTPException(status_code=500, detail="Download failed - no file created")
+        
+        actual_file = os.path.join(temp_dir, files[0])
+        
+        # Stream the file
+        def iterfile():
+            with open(actual_file, mode="rb") as file_like:
+                yield from file_like
+        
+        # Get file info for headers
+        file_size = os.path.getsize(actual_file)
+        filename = os.path.basename(actual_file)
+        
+        headers = {
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Length': str(file_size)
+        }
+        
+        return StreamingResponse(
+            iterfile(),
+            media_type='application/octet-stream',
+            headers=headers
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
 
 # Include the router in the main app
 app.include_router(api_router)
